@@ -1,5 +1,6 @@
 import os, json
 from datetime import date
+from collections import OrderedDict
 
 from simple_database.exceptions import ValidationError
 from simple_database.config import BASE_DB_FILE_PATH
@@ -16,10 +17,10 @@ class Table(object):
     def __init__(self, db, name, columns=None):
         self.db = db
         self.name = name
-
-        self.table_filepath = os.path.join(BASE_DB_FILE_PATH, self.db.name,
+        self.table_filepath = os.path.join(BASE_DB_FILE_PATH,
+                                           db.name,
                                            '{}.json'.format(self.name))
-
+                                           
         # In case the table JSON file doesn't exist already, you must
         # initialize it as an empty table, with this JSON structure:
         # {'columns': columns, 'rows': []}
@@ -27,15 +28,14 @@ class Table(object):
             with open(self.table_filepath, 'w+') as f:
                 json.dump({'columns': columns, 'rows': []}, f)
                 
-                
         self.columns = columns or self._read_columns()
 
     def _read_columns(self):
         # Read the columns configuration from the table's JSON file
         # and return it.
         with open(self.table_filepath, 'r') as file:
-            data = json.load(file)
-            return data['column']
+            json_file = json.load(file)
+            return json_file['columns']
 
     def insert(self, *args):
         # Validate that the provided row data is correct according to the
@@ -47,38 +47,27 @@ class Table(object):
         if len(args) != len(self.columns):
             raise ValidationError('Invalid amount of fields.')
             
-        rows_to_add = []
+        dict_to_add = {}
         for arg, col in zip(args, self.columns):
             if type(arg).__name__ == col['type']:
                 if isinstance(arg, date):
                     arg = str(arg)
-                serialized = {}
-                serialized[col['name']] = "{}".format(arg)
-                rows_to_add.append(serialized) 
+                dict_to_add[col['name']] = arg
             else:
-                raise ValidationError('Invalid type of field "{}": Given "{}", expected "{}"'.format(arg, col['type'],
-                                                                                                     type(arg).__name__))
+                raise ValidationError('Invalid type of field "{}": Given "{}", expected "{}"'.format(col['name'],
+                                                                                                     type(arg).__name__,
+                                                                                                     col['type']))
+        
         # Port args over to .json file
-        with open(self.table_filepath, 'r+') as f:
+        with open(self.table_filepath, 'r+') as file:
             
-            json_file = json.load(f)
-            if len(rows_to_add) == 0:
+            json_file = json.load(file)
+            if len(dict_to_add) == 0:
                 pass
-            
-            for row in rows_to_add:
-                json_file['rows'] +=  row
-                
-            f.seek(0)
-            f.write(json.dumps(json_file))
-        """
-        {
-            'cols': [lsist of dicts],
-            'rows':[
-            {'firstname': }
-            
-            ]
-        }
-        """
+            json_file['rows'].append(dict_to_add)
+            file.seek(0)
+            file.write(json.dumps(json_file))
+        
         
     def query(self, **kwargs):
         # Read from the table's JSON file all athe rows in the current table
@@ -89,22 +78,34 @@ class Table(object):
         # IMPORTANT: Each of the rows returned in each loop of the generator
         # must be an instance of the `Row` class, which contains all columns
         # as attributes of the object.
-        pass
+        with open(self.table_filepath, 'r') as file:
+            json_file = json.load(file)
+            json_rows = json_file['rows']
+            key_values = kwargs.items()
+            for row in json_rows:
+                for key, value in key_values:
+                    if row[key] == value:
+                        yield Row(row)
 
     def all(self):
         # Similar to the `query` method, but simply returning all rows in
         # the table.
         # Again, each element must be an instance of the `Row` class, with
         # the proper dynamic attributes.
-        pass
+        with open(self.table_filepath, 'r') as file:
+            json_file = json.load(file)
+            json_rows = json_file['rows']
+            return (Row(row) for row in json_rows)
 
     def count(self):
         # Read the JSON file and return the counter of rows in the table
-        pass
+        with open(self.table_filepath, 'r') as file:
+            json_file = json.load(file)
+            return len(json_file['rows'])
 
     def describe(self):
         # Read the columns configuration from the JSON file, and return it.
-        pass
+        return self.columns
 
 
 class DataBase(object):
@@ -119,9 +120,10 @@ class DataBase(object):
         # if the db directory already exists, raise ValidationError
         # otherwise, create the proper db directory
         if os.path.exists(filepath):
-            raise ValidationError
+            raise ValidationError()
         else:
             os.makedirs(filepath)
+            
 
     def _read_tables(self):
         # Gather the list of tables in the db directory looking for all files
@@ -131,17 +133,10 @@ class DataBase(object):
         # Finally return the list of table names.
         # Hint: You can use `os.listdir(self.db_filepath)` to loop through
         #       all files in the db directory
-        tables = [Table(self.db_filepath, table.strip('.json')) for table in os.listdir(self.db_filepath)]
+        tables = [Table(self, table[:-5]) for table in os.listdir(self.db_filepath)]
         for table in tables:
             setattr(self, table.name, table) # sets db.table_name = table
         return tables
-        """
-        
-        my_obj = object()
-        setattr(my_obj, 'the_list', [1,2,3])
-        my_obj.the_list[0] == 1
-            
-        """
 
     def create_table(self, table_name, columns):
         # Check if a table already exists with given name. If so, raise
@@ -166,6 +161,8 @@ def create_database(db_name):
     Creates a new DataBase object and returns the connection object
     to the brand new database.
     """
+    if os.path.exists(BASE_DB_FILE_PATH + db_name):
+        raise ValidationError('Database with name "{}" already exists.'.format(db_name))
     DataBase.create(db_name)
     return connect_database(db_name)
 
